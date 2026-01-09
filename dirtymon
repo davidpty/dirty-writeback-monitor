@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+import time
+import os
+from collections import deque, defaultdict
+
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import Progress, BarColumn, TextColumn
+from rich.table import Table
+from rich.console import Group
+from rich.layout import Layout
+from rich.text import Text
+
+INTERVAL = 1
+WINDOW = 15
+
+history = deque(maxlen=WINDOW)
+
+# ---------- Data collectors ----------
+
+def get_meminfo():
+    dirty = writeback = 0
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("Dirty:"):
+                dirty = int(line.split()[1])
+            elif line.startswith("Writeback:"):
+                writeback = int(line.split()[1])
+    return dirty, writeback
+
+def read_psi(path):
+    data = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = dict(p.split("=") for p in line.split()[1:])
+                data[line.split()[0]] = {
+                    "avg10": float(parts["avg10"]),
+                    "avg60": float(parts["avg60"]),
+                    "avg300": float(parts["avg300"]),
+                }
+    except FileNotFoundError:
+        pass
+    return data
+
+def classify_psi(avg10):
+    if avg10 == 0:
+        return "None", "No tasks are waiting."
+    if avg10 < 0.1:
+        return "Low", "Minor, short delays."
+    if avg10 < 1.0:
+        return "Sustained", "Tasks are regularly waiting."
+    return "Severe", "System is frequently blocked."
+
+def top_writers(limit=5):
+    writers = defaultdict(int)
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/io") as f:
+                for line in f:
+                    if line.startswith("write_bytes:"):
+                        writers[pid] = int(line.split()[1])
+        except Exception:
+            continue
+    top = sorted(writers.items(), key=lambda x: x[1], reverse=True)[:limit]
+    result = []
+    for pid, bytes_written in top:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                name = f.read().strip()
+            result.append((pid, name, bytes_written))
+        except Exception:
+            continue
+    return result
+
+# ---------- Human summary ----------
+
+def human_summary(state):
+    dirty_mb = state["dirty"] / 1024
+    rate_mb = state["rate"] / 1024
+    io_level, _ = state["psi_io"]
+    mem_level, _ = state["psi_mem"]
+
+    if dirty_mb < 50:
+        return "System is healthy.", "Very little data is waiting to be written to disk."
+    if rate_mb > 10:
+        return "System is busy but normal.", "Data is being written to disk fast enough."
+    if io_level in ("Sustained", "Severe"):
+        return "System is slowed by storage.", "The disk cannot keep up with write activity."
+    if mem_level in ("Sustained", "Severe"):
+        return "System is slowed by memory pressure.", "Applications are waiting for memory."
+    if state["writers"]:
+        return "Applications are producing too much data.", "Some programs are writing heavily to disk."
+    return "System appears stalled.", "Data is not being written and progress is minimal."
+
+# ---------- UI ----------
+
+def build_layout(state):
+    layout = Layout()
+
+    header = Layout(size=3)
+    bar = Layout(size=3)
+    summary = Layout(size=4)
+    body = Layout()
+
+    layout.split_column(header, bar, summary, body)
+
+    header.update(
+        Panel(
+            Text("Dirty Memory Writeback Monitor", justify="center", style="bold"),
+            border_style="cyan",
+        )
+    )
+
+    progress = Progress(
+        TextColumn("Dirty memory remaining"),
+        BarColumn(bar_width=None),
+        TextColumn("{task.completed:.1f} MB"),
+        expand=True,
+    )
+    task = progress.add_task("dirty", total=state["dirty_peak"] / 1024)
+    progress.update(task, completed=state["dirty"] / 1024)
+
+    bar.update(Panel(progress, border_style="cyan"))
+
+    verdict, reason = human_summary(state)
+    summary_table = Table.grid()
+    summary_table.add_row(f"[bold]{verdict}[/bold]")
+    summary_table.add_row(reason)
+
+    summary.update(
+        Panel(summary_table, title="Summary (plain language)", border_style="bright_white")
+    )
+
+    stats = Table.grid(padding=(0, 2))
+    stats.add_column(justify="right")
+    stats.add_column()
+
+    stats.add_row("Dirty data", f"{state['dirty']/1024:.1f} MB")
+    stats.add_row("Writeback", f"{state['writeback']/1024:.1f} MB")
+    stats.add_row("Drain speed", f"{state['rate']/1024:.2f} MB/s")
+    stats.add_row(
+        "ETA",
+        f"{int(state['eta']//60)}m {int(state['eta']%60)}s" if state["eta"] else "Stalled",
+    )
+
+    psi_table = Table(title="System pressure (plain explanation)", show_header=True)
+    psi_table.add_column("Resource")
+    psi_table.add_column("Level")
+    psi_table.add_column("Meaning")
+
+    psi_table.add_row("Disk (I/O)", *state["psi_io"])
+    psi_table.add_row("Memory", *state["psi_mem"])
+
+    writers = Table(title="Top disk writers", show_header=True)
+    writers.add_column("PID")
+    writers.add_column("Process")
+    writers.add_column("Data written")
+
+    for pid, name, bytes_written in state["writers"]:
+        writers.add_row(str(pid), name, f"{bytes_written/1024/1024:.1f} MB")
+
+    body.split_row(
+        Panel(stats, title="Writeback status", border_style="green"),
+        Panel(psi_table, border_style="yellow"),
+        Panel(writers, border_style="red"),
+    )
+
+    return layout
+
+# ---------- Main loop ----------
+
+dirty_start, _ = get_meminfo()
+dirty_peak = dirty_start
+prev_dirty = dirty_start
+prev_time = time.time()
+
+with Live(refresh_per_second=4, screen=False) as live:
+    while True:
+        time.sleep(INTERVAL)
+
+        dirty, writeback = get_meminfo()
+        now = time.time()
+
+        dt = now - prev_time
+        dd = prev_dirty - dirty
+
+        if dt > 0 and dd > 0:
+            history.append(dd / dt)
+
+        rate = sum(history) / len(history) if history else 0
+        eta = dirty / rate if rate > 0 else None
+
+        psi_io_raw = read_psi("/proc/pressure/io")
+        psi_mem_raw = read_psi("/proc/pressure/memory")
+
+        io_avg10 = psi_io_raw.get("some", {}).get("avg10", 0)
+        mem_avg10 = psi_mem_raw.get("some", {}).get("avg10", 0)
+
+        io_level, io_text = classify_psi(io_avg10)
+        mem_level, mem_text = classify_psi(mem_avg10)
+
+        state = {
+            "dirty": dirty,
+            "writeback": writeback,
+            "rate": rate,
+            "eta": eta,
+            "dirty_peak": dirty_peak,
+            "psi_io": (io_level, io_text),
+            "psi_mem": (mem_level, mem_text),
+            "writers": top_writers(),
+        }
+
+        prev_dirty = dirty
+        prev_time = now
+
+        live.update(build_layout(state))
+

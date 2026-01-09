@@ -1,0 +1,17 @@
+[project]
+name = "dirty-writeback-monitor"
+version = "0.1.0"
+description = "Monitor dirty memory and writeback on Linux"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = [
+    "rich>=10.0.0",
+]
+
+[project.scripts]
+dirtymon = "dirtymon:main" # Note: You might need to refactor dirtymon.py to have a main() function for this to work perfectly, or just use the script directly.
+
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
