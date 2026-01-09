@@ -174,4 +174,4 @@ Open an issue before large changes.
 
 ## License
 
-See `LICENSE` file.
+MIT
