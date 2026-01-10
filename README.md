@@ -1,6 +1,6 @@
 # Dirty Writeback Monitor
 
-A lightweight **terminal-based Linux monitoring tool** for observing **dirty memory, writeback activity, and I/O pressure** in real time.
+A lightweight **terminal-based Linux monitoring tool** for observing **dirty memory, writeback activity and I/O pressure** in real time.
 
 The tool is designed for **system engineers, performance analysts and advanced Linux users** who need visibility into how memory-backed writes are flushed to disk and how this affects overall system behavior.
 
