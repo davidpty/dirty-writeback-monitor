@@ -107,19 +107,6 @@ Exit with `Ctrl+C`.
 
 ---
 
-## Example Output
-
-```
-Dirty:      842 MB
-Writeback:  117 MB
-IO PSI:     avg10=0.21% avg60=0.08% avg300=0.01%
-Top writers:
-  postgres    42 MB/s
-  rsync       18 MB/s
-```
-
----
-
 ## Interpreting the Data
 
 * **Rising dirty memory + low writeback** → disk not flushing yet
@@ -144,26 +131,6 @@ Use this tool alongside `iostat`, `vmstat`, or `perf` for deeper analysis.
 * All data is read locally from the kernel
 * No files are written
 * No network access
-
----
-
-## Project Status
-
-* Actively maintained
-* Interface considered stable for CLI usage
-* No background services or persistent state
-
----
-
-## Contributing
-
-Contributions are welcome if they:
-
-* Keep runtime overhead minimal
-* Avoid background processes
-* Preserve terminal-first usability
-
-Open an issue before large changes.
 
 ---
 
